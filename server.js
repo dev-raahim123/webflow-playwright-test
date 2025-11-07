@@ -8,11 +8,24 @@ const path = require('path');
 
 const app = express();
 
-// Middleware
-app.use(express.json({ verify: (req, res, buf) => {
+// Middleware - IMPORTANT: Capture raw body BEFORE parsing
+// We need to handle webhook signature validation, so we must preserve raw body
+let rawBodyBuffer = null;
+
+app.use('/api/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
   // Store raw body for webhook signature validation
-  req.rawBody = buf.toString('utf8');
-}}));
+  req.rawBody = req.body.toString('utf8');
+  // Parse JSON manually for webhook endpoint
+  try {
+    req.body = JSON.parse(req.rawBody);
+  } catch (e) {
+    req.body = {};
+  }
+  next();
+});
+
+// For all other routes, use normal JSON parsing
+app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // In-memory store for test jobs (in production, use a database)
@@ -20,11 +33,26 @@ const testJobsStore = new Map();
 
 /**
  * Validates Webflow webhook signature
+ * Webflow sends signature as: timestamp,signature
+ * Or just: signature (for newer webhooks)
  */
-function validateWebflowSignature(signature, body, secret) {
+function validateWebflowSignature(signature, body, secret, timestamp) {
   if (!signature || !secret) {
     console.log('Missing signature or secret');
     return false;
+  }
+  
+  // Check timestamp if provided (prevent replay attacks)
+  if (timestamp) {
+    const requestTime = parseInt(timestamp, 10);
+    const currentTime = Math.floor(Date.now() / 1000);
+    const timeDiff = Math.abs(currentTime - requestTime);
+    
+    // Reject if timestamp is more than 5 minutes old
+    if (timeDiff > 300) {
+      console.log('Timestamp too old:', { requestTime, currentTime, timeDiff });
+      return false;
+    }
   }
   
   // Create expected signature
@@ -32,21 +60,27 @@ function validateWebflowSignature(signature, body, secret) {
   hmac.update(body);
   const expectedSignature = hmac.digest('hex');
   
-  // Webflow may send signature in different formats
-  // Try to extract the hash part
-  let receivedHash = signature;
+  // Extract the signature hash
+  // Webflow format: "timestamp,signature" or just "signature"
+  let receivedHash = signature.trim();
   
-  // If signature contains comma, extract the hash part (format: timestamp,hash)
   if (signature.includes(',')) {
+    // Format: timestamp,signature
     const parts = signature.split(',');
     receivedHash = parts[parts.length - 1].trim();
-  } else {
-    // If no comma, assume the whole signature is the hash
-    receivedHash = signature.trim();
   }
   
   // Compare signatures
   try {
+    // Ensure both are the same length
+    if (expectedSignature.length !== receivedHash.length) {
+      console.log('Signature length mismatch:', {
+        expectedLength: expectedSignature.length,
+        receivedLength: receivedHash.length
+      });
+      return false;
+    }
+    
     const isValid = crypto.timingSafeEqual(
       Buffer.from(expectedSignature),
       Buffer.from(receivedHash)
@@ -54,10 +88,11 @@ function validateWebflowSignature(signature, body, secret) {
     
     if (!isValid) {
       console.log('Signature mismatch:', {
-        expected: expectedSignature.substring(0, 10) + '...',
-        received: receivedHash.substring(0, 10) + '...',
+        expected: expectedSignature.substring(0, 16) + '...',
+        received: receivedHash.substring(0, 16) + '...',
         signatureLength: signature.length,
-        bodyLength: body.length
+        bodyLength: body.length,
+        secretLength: secret.length
       });
     }
     
@@ -206,31 +241,28 @@ app.post('/api/webhook', (req, res) => {
     }
 
     const signature = req.headers['x-webflow-signature'] || req.headers['X-Webflow-Signature'];
+    const timestamp = req.headers['x-webflow-timestamp'] || req.headers['X-Webflow-Timestamp'];
     
-    // Get raw body - important for signature validation
-    let rawBody;
-    if (req.rawBody) {
-      rawBody = req.rawBody;
-    } else if (Buffer.isBuffer(req.body)) {
-      rawBody = req.body.toString('utf8');
-    } else if (typeof req.body === 'string') {
-      rawBody = req.body;
-    } else {
-      rawBody = JSON.stringify(req.body);
-    }
+    // Get raw body - CRITICAL: Must be exactly as Webflow sent it
+    // Since we're using express.raw() for this route, req.body is a Buffer
+    // and req.rawBody is the string version
+    const rawBody = req.rawBody || (Buffer.isBuffer(req.body) ? req.body.toString('utf8') : JSON.stringify(req.body));
     
     console.log('Webhook received:', {
       hasSignature: !!signature,
       signatureLength: signature?.length,
+      hasTimestamp: !!timestamp,
       bodyLength: rawBody.length,
-      bodyPreview: rawBody.substring(0, 100)
+      bodyPreview: rawBody.substring(0, 100),
+      signaturePreview: signature?.substring(0, 20) + '...'
     });
 
     // Validate signature
-    if (!validateWebflowSignature(signature, rawBody, webhookSecret)) {
+    if (!validateWebflowSignature(signature, rawBody, webhookSecret, timestamp)) {
       console.error('Invalid webhook signature', {
         signature: signature?.substring(0, 20) + '...',
-        secretLength: webhookSecret?.length
+        secretLength: webhookSecret?.length,
+        secretPreview: webhookSecret?.substring(0, 10) + '...' // First 10 chars for debugging
       });
       return res.status(401).json({ error: 'Invalid signature' });
     }
