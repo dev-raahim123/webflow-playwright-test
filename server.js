@@ -83,12 +83,25 @@ function validateWebflowSignature(signature, body, secret, timestamp) {
   }
   
   // Create expected signature using Buffer directly
-  const hmac = crypto.createHmac('sha256', secret);
-  hmac.update(bodyBuffer); // Use Buffer directly - no encoding needed
-  const expectedSignature = hmac.digest('hex');
+  // Try multiple signature formats:
+  // 1. Body only (most common)
+  // 2. Timestamp + body (some providers do this)
+  const hmac1 = crypto.createHmac('sha256', secret);
+  hmac1.update(bodyBuffer);
+  const expectedSignature1 = hmac1.digest('hex');
   
-  console.log('Expected signature:', expectedSignature);
-  console.log('Expected signature length:', expectedSignature.length);
+  let expectedSignature2 = null;
+  if (timestamp) {
+    const hmac2 = crypto.createHmac('sha256', secret);
+    hmac2.update(timestamp);
+    hmac2.update('.');
+    hmac2.update(bodyBuffer);
+    expectedSignature2 = hmac2.digest('hex');
+  }
+  
+  console.log('Expected signature (body only):', expectedSignature1);
+  console.log('Expected signature (timestamp.body):', expectedSignature2);
+  console.log('Expected signature length:', expectedSignature1.length);
   
   // Extract the signature hash
   // Webflow format: "timestamp,signature" or just "signature"
@@ -109,29 +122,43 @@ function validateWebflowSignature(signature, body, secret, timestamp) {
   // Compare signatures
   try {
     // Ensure both are the same length
-    if (expectedSignature.length !== receivedHash.length) {
+    if (expectedSignature1.length !== receivedHash.length) {
       console.log('❌ Signature length mismatch:', {
-        expectedLength: expectedSignature.length,
+        expectedLength: expectedSignature1.length,
         receivedLength: receivedHash.length,
-        expected: expectedSignature,
+        expected: expectedSignature1,
         received: receivedHash
       });
       return false;
     }
     
-    const isValid = crypto.timingSafeEqual(
-      Buffer.from(expectedSignature, 'hex'),
+    // Try both signature formats
+    let isValid = crypto.timingSafeEqual(
+      Buffer.from(expectedSignature1, 'hex'),
       Buffer.from(receivedHash, 'hex')
     );
     
+    if (!isValid && expectedSignature2) {
+      // Try timestamp.body format
+      isValid = crypto.timingSafeEqual(
+        Buffer.from(expectedSignature2, 'hex'),
+        Buffer.from(receivedHash, 'hex')
+      );
+      if (isValid) {
+        console.log('✅ Signature match (using timestamp.body format)!');
+      }
+    }
+    
     if (!isValid) {
       console.log('❌ Signature mismatch:', {
-        expected: expectedSignature,
+        expectedBodyOnly: expectedSignature1,
+        expectedTimestampBody: expectedSignature2,
         received: receivedHash,
-        expectedFirst16: expectedSignature.substring(0, 16),
+        expectedFirst16: expectedSignature1.substring(0, 16),
         receivedFirst16: receivedHash.substring(0, 16),
-        bodyLength: bodyString.length,
-        secretLength: secret.length
+        bodyLength: bodyBuffer.length,
+        secretLength: secret.length,
+        secretPreview: secret.substring(0, 10) + '...'
       });
     } else {
       console.log('✅ Signature match!');
