@@ -53,7 +53,12 @@ function validateWebflowSignature(signature, body, secret, timestamp) {
   
   // Check timestamp if provided (prevent replay attacks)
   if (timestamp) {
-    const requestTime = parseInt(timestamp, 10);
+    let requestTime = parseInt(timestamp, 10);
+    // Webflow sends timestamp in milliseconds, convert to seconds if > 1e10
+    if (requestTime > 1e10) {
+      requestTime = Math.floor(requestTime / 1000);
+      console.log('Converted timestamp from milliseconds to seconds:', requestTime);
+    }
     const currentTime = Math.floor(Date.now() / 1000);
     const timeDiff = Math.abs(currentTime - requestTime);
     
@@ -282,8 +287,15 @@ app.post('/api/webhook', (req, res) => {
     
     // Get raw body - CRITICAL: Must be exactly as Webflow sent it
     // Use the Buffer directly for signature validation (most accurate)
-    const rawBodyBuffer = req.rawBodyBuffer || (Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body), 'utf8'));
+    let rawBodyBuffer = req.rawBodyBuffer;
+    if (!rawBodyBuffer || !Buffer.isBuffer(rawBodyBuffer)) {
+      // Fallback: create buffer from raw body string
+      rawBodyBuffer = Buffer.from(req.rawBody || JSON.stringify(req.body), 'utf8');
+    }
     const rawBody = req.rawBody || rawBodyBuffer.toString('utf8');
+    
+    console.log('Raw body buffer type:', Buffer.isBuffer(rawBodyBuffer) ? 'Buffer' : typeof rawBodyBuffer);
+    console.log('Raw body buffer length:', rawBodyBuffer?.length);
     
     // Log ALL headers for debugging
     console.log('=== WEBHOOK DEBUG INFO ===');
