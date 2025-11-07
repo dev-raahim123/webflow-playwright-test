@@ -1,0 +1,12 @@
+// .gitignore
+node_modules/
+.env
+.env.local
+.env*.local
+playwright-report/
+test-results/
+*.png
+*.html
+.DS_Store
+.vercel
+
