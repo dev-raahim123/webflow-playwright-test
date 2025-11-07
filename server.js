@@ -13,8 +13,10 @@ const app = express();
 let rawBodyBuffer = null;
 
 app.use('/api/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
-  // Store raw body for webhook signature validation
-  req.rawBody = req.body.toString('utf8');
+  // Store raw body as Buffer for webhook signature validation
+  // CRITICAL: Keep as Buffer - don't convert to string yet
+  req.rawBodyBuffer = req.body; // This is a Buffer
+  req.rawBody = req.body.toString('utf8'); // String version for JSON parsing
   // Parse JSON manually for webhook endpoint
   try {
     req.body = JSON.parse(req.rawBody);
@@ -63,14 +65,21 @@ function validateWebflowSignature(signature, body, secret, timestamp) {
     console.log('✅ Timestamp valid:', { requestTime, currentTime, timeDiff });
   }
   
-  // Ensure body is a string
-  const bodyString = typeof body === 'string' ? body : JSON.stringify(body);
-  console.log('Body string length:', bodyString.length);
-  console.log('Body string (first 100):', bodyString.substring(0, 100));
+  // Use Buffer if provided, otherwise convert to string then to buffer
+  let bodyBuffer;
+  if (Buffer.isBuffer(body)) {
+    bodyBuffer = body;
+    console.log('Using body as Buffer, length:', bodyBuffer.length);
+  } else {
+    const bodyString = typeof body === 'string' ? body : JSON.stringify(body);
+    bodyBuffer = Buffer.from(bodyString, 'utf8');
+    console.log('Converted body to Buffer, length:', bodyBuffer.length);
+    console.log('Body string (first 100):', bodyString.substring(0, 100));
+  }
   
-  // Create expected signature
+  // Create expected signature using Buffer directly
   const hmac = crypto.createHmac('sha256', secret);
-  hmac.update(bodyString, 'utf8');
+  hmac.update(bodyBuffer); // Use Buffer directly - no encoding needed
   const expectedSignature = hmac.digest('hex');
   
   console.log('Expected signature:', expectedSignature);
@@ -272,9 +281,9 @@ app.post('/api/webhook', (req, res) => {
     const timestamp = req.headers['x-webflow-timestamp'] || req.headers['X-Webflow-Timestamp'];
     
     // Get raw body - CRITICAL: Must be exactly as Webflow sent it
-    // Since we're using express.raw() for this route, req.body is a Buffer
-    // and req.rawBody is the string version
-    const rawBody = req.rawBody || (Buffer.isBuffer(req.body) ? req.body.toString('utf8') : JSON.stringify(req.body));
+    // Use the Buffer directly for signature validation (most accurate)
+    const rawBodyBuffer = req.rawBodyBuffer || (Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body), 'utf8'));
+    const rawBody = req.rawBody || rawBodyBuffer.toString('utf8');
     
     // Log ALL headers for debugging
     console.log('=== WEBHOOK DEBUG INFO ===');
@@ -288,8 +297,8 @@ app.post('/api/webhook', (req, res) => {
     console.log('Secret length:', webhookSecret?.length);
     console.log('Secret preview:', webhookSecret?.substring(0, 10) + '...');
     
-    // Validate signature
-    if (!validateWebflowSignature(signature, rawBody, webhookSecret, timestamp)) {
+    // Validate signature - pass Buffer for most accurate validation
+    if (!validateWebflowSignature(signature, rawBodyBuffer, webhookSecret, timestamp)) {
       console.error('=== SIGNATURE VALIDATION FAILED ===');
       console.error('Signature received:', signature);
       console.error('Body used for validation:', rawBody);
