@@ -310,10 +310,15 @@ app.post('/api/webhook', (req, res) => {
     console.log('Secret preview:', webhookSecret?.substring(0, 10) + '...');
     
     // Validate signature - pass Buffer for most accurate validation
-    if (!validateWebflowSignature(signature, rawBodyBuffer, webhookSecret, timestamp)) {
+    // Ensure we're passing a Buffer, not an object
+    const bodyForValidation = Buffer.isBuffer(rawBodyBuffer) ? rawBodyBuffer : Buffer.from(rawBody, 'utf8');
+    console.log('Body type being passed to validation:', Buffer.isBuffer(bodyForValidation) ? 'Buffer' : typeof bodyForValidation);
+    
+    if (!validateWebflowSignature(signature, bodyForValidation, webhookSecret, timestamp)) {
       console.error('=== SIGNATURE VALIDATION FAILED ===');
       console.error('Signature received:', signature);
-      console.error('Body used for validation:', rawBody);
+      console.error('Body used for validation (string):', rawBody);
+      console.error('Body used for validation (buffer length):', bodyForValidation.length);
       console.error('Secret length:', webhookSecret?.length);
       return res.status(401).json({ error: 'Invalid webhook signature' });
     }
