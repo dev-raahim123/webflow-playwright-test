@@ -37,8 +37,15 @@ const testJobsStore = new Map();
  * Or just: signature (for newer webhooks)
  */
 function validateWebflowSignature(signature, body, secret, timestamp) {
+  console.log('=== VALIDATE SIGNATURE START ===');
+  console.log('Signature input:', signature);
+  console.log('Body input length:', body.length);
+  console.log('Body input type:', typeof body);
+  console.log('Secret length:', secret?.length);
+  console.log('Timestamp:', timestamp);
+  
   if (!signature || !secret) {
-    console.log('Missing signature or secret');
+    console.log('❌ Missing signature or secret');
     return false;
   }
   
@@ -50,15 +57,24 @@ function validateWebflowSignature(signature, body, secret, timestamp) {
     
     // Reject if timestamp is more than 5 minutes old
     if (timeDiff > 300) {
-      console.log('Timestamp too old:', { requestTime, currentTime, timeDiff });
+      console.log('❌ Timestamp too old:', { requestTime, currentTime, timeDiff });
       return false;
     }
+    console.log('✅ Timestamp valid:', { requestTime, currentTime, timeDiff });
   }
+  
+  // Ensure body is a string
+  const bodyString = typeof body === 'string' ? body : JSON.stringify(body);
+  console.log('Body string length:', bodyString.length);
+  console.log('Body string (first 100):', bodyString.substring(0, 100));
   
   // Create expected signature
   const hmac = crypto.createHmac('sha256', secret);
-  hmac.update(body);
+  hmac.update(bodyString, 'utf8');
   const expectedSignature = hmac.digest('hex');
+  
+  console.log('Expected signature:', expectedSignature);
+  console.log('Expected signature length:', expectedSignature.length);
   
   // Extract the signature hash
   // Webflow format: "timestamp,signature" or just "signature"
@@ -68,37 +84,49 @@ function validateWebflowSignature(signature, body, secret, timestamp) {
     // Format: timestamp,signature
     const parts = signature.split(',');
     receivedHash = parts[parts.length - 1].trim();
+    console.log('Extracted hash from comma-separated format:', receivedHash);
+  } else {
+    console.log('Using signature as-is (no comma):', receivedHash);
   }
+  
+  console.log('Received hash:', receivedHash);
+  console.log('Received hash length:', receivedHash.length);
   
   // Compare signatures
   try {
     // Ensure both are the same length
     if (expectedSignature.length !== receivedHash.length) {
-      console.log('Signature length mismatch:', {
+      console.log('❌ Signature length mismatch:', {
         expectedLength: expectedSignature.length,
-        receivedLength: receivedHash.length
+        receivedLength: receivedHash.length,
+        expected: expectedSignature,
+        received: receivedHash
       });
       return false;
     }
     
     const isValid = crypto.timingSafeEqual(
-      Buffer.from(expectedSignature),
-      Buffer.from(receivedHash)
+      Buffer.from(expectedSignature, 'hex'),
+      Buffer.from(receivedHash, 'hex')
     );
     
     if (!isValid) {
-      console.log('Signature mismatch:', {
-        expected: expectedSignature.substring(0, 16) + '...',
-        received: receivedHash.substring(0, 16) + '...',
-        signatureLength: signature.length,
-        bodyLength: body.length,
+      console.log('❌ Signature mismatch:', {
+        expected: expectedSignature,
+        received: receivedHash,
+        expectedFirst16: expectedSignature.substring(0, 16),
+        receivedFirst16: receivedHash.substring(0, 16),
+        bodyLength: bodyString.length,
         secretLength: secret.length
       });
+    } else {
+      console.log('✅ Signature match!');
     }
     
     return isValid;
   } catch (e) {
-    console.error('Signature validation error:', e.message);
+    console.error('❌ Signature validation error:', e.message);
+    console.error('Error stack:', e.stack);
     return false;
   }
 }
@@ -248,24 +276,28 @@ app.post('/api/webhook', (req, res) => {
     // and req.rawBody is the string version
     const rawBody = req.rawBody || (Buffer.isBuffer(req.body) ? req.body.toString('utf8') : JSON.stringify(req.body));
     
-    console.log('Webhook received:', {
-      hasSignature: !!signature,
-      signatureLength: signature?.length,
-      hasTimestamp: !!timestamp,
-      bodyLength: rawBody.length,
-      bodyPreview: rawBody.substring(0, 100),
-      signaturePreview: signature?.substring(0, 20) + '...'
-    });
-
+    // Log ALL headers for debugging
+    console.log('=== WEBHOOK DEBUG INFO ===');
+    console.log('All headers:', JSON.stringify(req.headers, null, 2));
+    console.log('Signature header:', signature);
+    console.log('Timestamp header:', timestamp);
+    console.log('Raw body type:', typeof rawBody);
+    console.log('Raw body length:', rawBody.length);
+    console.log('Raw body (first 200 chars):', rawBody.substring(0, 200));
+    console.log('Raw body (last 50 chars):', rawBody.substring(rawBody.length - 50));
+    console.log('Secret length:', webhookSecret?.length);
+    console.log('Secret preview:', webhookSecret?.substring(0, 10) + '...');
+    
     // Validate signature
     if (!validateWebflowSignature(signature, rawBody, webhookSecret, timestamp)) {
-      console.error('Invalid webhook signature', {
-        signature: signature?.substring(0, 20) + '...',
-        secretLength: webhookSecret?.length,
-        secretPreview: webhookSecret?.substring(0, 10) + '...' // First 10 chars for debugging
-      });
-      return res.status(401).json({ error: 'Invalid signature' });
+      console.error('=== SIGNATURE VALIDATION FAILED ===');
+      console.error('Signature received:', signature);
+      console.error('Body used for validation:', rawBody);
+      console.error('Secret length:', webhookSecret?.length);
+      return res.status(401).json({ error: 'Invalid webhook signature' });
     }
+    
+    console.log('=== SIGNATURE VALIDATION SUCCESS ===');
 
     // Parse payload
     const payload = typeof req.body === 'object' ? req.body : JSON.parse(rawBody);
