@@ -331,6 +331,86 @@ async function saveTestReport(jobId) {
 }
 
 /**
+ * Formats test results as readable text report
+ */
+function formatTextReport(stdout, stderr, jsonReport, status) {
+  let report = '';
+  report += '='.repeat(80) + '\n';
+  report += 'PLAYWRIGHT TEST REPORT\n';
+  report += '='.repeat(80) + '\n\n';
+  
+  // Status
+  report += `Status: ${status.toUpperCase()}\n`;
+  report += `Generated: ${new Date().toISOString()}\n\n`;
+  
+  // Summary from JSON if available
+  if (jsonReport) {
+    const stats = jsonReport.stats || {};
+    report += 'SUMMARY\n';
+    report += '-'.repeat(80) + '\n';
+    report += `Total Tests: ${stats.total || 0}\n`;
+    report += `Passed: ${stats.passed || 0}\n`;
+    report += `Failed: ${stats.failed || 0}\n`;
+    report += `Skipped: ${stats.skipped || 0}\n`;
+    report += `Duration: ${stats.duration ? (stats.duration / 1000).toFixed(2) + 's' : 'N/A'}\n\n`;
+    
+    // Test suites
+    if (jsonReport.suites && jsonReport.suites.length > 0) {
+      report += 'TEST SUITES\n';
+      report += '-'.repeat(80) + '\n';
+      jsonReport.suites.forEach((suite, idx) => {
+        report += `\n${idx + 1}. ${suite.title || 'Untitled Suite'}\n`;
+        if (suite.specs) {
+          suite.specs.forEach((spec, specIdx) => {
+            const specStatus = spec.tests?.[0]?.status || 'unknown';
+            const statusIcon = specStatus === 'passed' ? '✓' : specStatus === 'failed' ? '✗' : '○';
+            report += `   ${statusIcon} ${spec.title || 'Untitled Test'}\n`;
+            
+            if (spec.tests && spec.tests[0]) {
+              const test = spec.tests[0];
+              if (test.status === 'failed' && test.results && test.results[0]) {
+                const result = test.results[0];
+                if (result.error) {
+                  report += `      Error: ${result.error.message || 'Unknown error'}\n`;
+                  if (result.error.stack) {
+                    const stackLines = result.error.stack.split('\n').slice(0, 3);
+                    report += `      Stack: ${stackLines.join('\n      ')}\n`;
+                  }
+                }
+              }
+              if (test.duration) {
+                report += `      Duration: ${(test.duration / 1000).toFixed(2)}s\n`;
+              }
+            }
+          });
+        }
+      });
+      report += '\n';
+    }
+  }
+  
+  // Console output
+  if (stdout) {
+    report += 'CONSOLE OUTPUT\n';
+    report += '-'.repeat(80) + '\n';
+    report += stdout + '\n\n';
+  }
+  
+  // Errors
+  if (stderr) {
+    report += 'ERRORS\n';
+    report += '-'.repeat(80) + '\n';
+    report += stderr + '\n\n';
+  }
+  
+  report += '='.repeat(80) + '\n';
+  report += 'END OF REPORT\n';
+  report += '='.repeat(80) + '\n';
+  
+  return report;
+}
+
+/**
  * Runs Playwright tests asynchronously
  */
 async function runTestsAsync(jobId) {
@@ -346,8 +426,8 @@ async function runTestsAsync(jobId) {
     job.startedAt = new Date().toISOString();
     testJobsStore.set(jobId, job);
 
-    // Run Playwright tests
-    const testCommand = 'npx playwright test --project=chromium --reporter=html';
+    // Run Playwright tests with both HTML and JSON reporters
+    const testCommand = 'npx playwright test --project=chromium --reporter=html --reporter=json';
     
     console.log(`Executing command: ${testCommand}`);
     console.log(`Working directory: ${process.cwd()}`);
@@ -373,6 +453,7 @@ async function runTestsAsync(jobId) {
           job.error = error.message;
           job.stderr = stderr;
           job.stdout = stdout;
+          job.textReport = formatTextReport(stdout, stderr, null, 'failed');
           job.completedAt = new Date().toISOString();
           testJobsStore.set(jobId, job);
           
@@ -384,13 +465,25 @@ async function runTestsAsync(jobId) {
         console.log(`=== TESTS COMPLETED SUCCESSFULLY ===`);
         console.log(`Job ID: ${jobId}`);
         console.log(`STDOUT length: ${stdout?.length || 0} characters`);
-        console.log(`STDOUT (first 500 chars): ${stdout?.substring(0, 500) || 'No output'}`);
-        if (stdout && stdout.length > 500) {
-          console.log(`STDOUT (last 500 chars): ${stdout.substring(stdout.length - 500)}`);
+        
+        // Parse JSON report if available
+        let jsonReport = null;
+        try {
+          const fs = require('fs').promises;
+          const jsonPath = 'test-results.json';
+          const jsonContent = await fs.readFile(jsonPath, 'utf8');
+          jsonReport = JSON.parse(jsonContent);
+          console.log(`JSON report loaded: ${jsonReport.suites?.length || 0} suites`);
+        } catch (e) {
+          console.log(`No JSON report found or error reading: ${e.message}`);
         }
+        
+        // Format text report
+        const textReport = formatTextReport(stdout, stderr, jsonReport, 'completed');
         
         job.status = 'completed';
         job.stdout = stdout;
+        job.textReport = textReport;
         job.completedAt = new Date().toISOString();
         testJobsStore.set(jobId, job);
         
@@ -436,7 +529,8 @@ app.get('/', (req, res) => {
       webhook: '/api/webhook',
       runTests: '/api/run-tests',
       testStatus: '/api/test-status/:jobId',
-      reports: '/api/reports/:jobId'
+      reports: '/api/reports/:jobId',
+      textReport: '/api/report-text/:jobId'
     }
   });
 });
@@ -536,14 +630,18 @@ app.post('/api/webhook', (req, res) => {
     const jobId = `test-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     
     // Store job info
-    testJobsStore.set(jobId, {
+    const jobData = {
       id: jobId,
       status: 'queued',
       createdAt: new Date().toISOString(),
       webflowEvent: eventType,
       siteId: payload.site || payload.siteId || payload?.payload?.siteId,
       webflowPayload: payload.payload || payload.data || payload,
-    });
+    };
+    testJobsStore.set(jobId, jobData);
+    console.log(`Job stored: ${jobId}`);
+    console.log(`Total jobs in store: ${testJobsStore.size}`);
+    console.log(`Job data:`, JSON.stringify(jobData, null, 2));
 
     // Trigger test execution asynchronously
     runTestsAsync(jobId).catch(err => {
@@ -562,6 +660,7 @@ app.post('/api/webhook', (req, res) => {
       jobId,
       statusUrl: `/api/test-status/${jobId}`,
       reportUrl: `/api/reports/${jobId}`,
+      textReportUrl: `/api/report-text/${jobId}`,
     });
 
   } catch (error) {
@@ -610,6 +709,7 @@ app.post('/api/run-tests', (req, res) => {
       status: 'running',
       statusUrl: `/api/test-status/${jobId}`,
       reportUrl: `/api/reports/${jobId}`,
+      textReportUrl: `/api/report-text/${jobId}`,
     });
 
     runTestsAsync(jobId).catch(err => {
@@ -637,11 +737,24 @@ app.get('/api/test-status/:jobId', (req, res) => {
   try {
     const { jobId } = req.params;
     
+    console.log(`=== TEST STATUS REQUEST ===`);
+    console.log(`Requested job ID: ${jobId}`);
+    console.log(`Total jobs in store: ${testJobsStore.size}`);
+    console.log(`All job IDs in store:`, Array.from(testJobsStore.keys()));
+    
     const job = testJobsStore.get(jobId);
     
     if (!job) {
-      return res.status(404).json({ error: 'Job not found' });
+      console.log(`Job ${jobId} not found in store`);
+      return res.status(404).json({ 
+        error: 'Job not found',
+        requestedJobId: jobId,
+        totalJobs: testJobsStore.size,
+        availableJobIds: Array.from(testJobsStore.keys())
+      });
     }
+    
+    console.log(`Job found: ${jobId}, status: ${job.status}`);
 
     const { reportData, ...jobStatus } = job;
     
@@ -649,6 +762,7 @@ app.get('/api/test-status/:jobId', (req, res) => {
       success: true,
       job: jobStatus,
       reportUrl: `/api/reports/${jobId}`,
+      textReportUrl: `/api/report-text/${jobId}`,
     });
 
   } catch (error) {
@@ -697,6 +811,7 @@ app.get('/api/reports/:jobId', (req, res) => {
       jobId,
       status: job.status,
       reportFiles: job.reportFiles,
+      textReportUrl: `/api/report-text/${jobId}`,
       reportUrl: `/api/reports/${jobId}?file=index.html`,
       createdAt: job.createdAt,
       completedAt: job.completedAt,
@@ -708,6 +823,59 @@ app.get('/api/reports/:jobId', (req, res) => {
       error: 'Internal server error',
       message: error.message 
     });
+  }
+});
+
+/**
+ * Text report endpoint - Returns plain text report
+ */
+app.get('/api/report-text/:jobId', (req, res) => {
+  try {
+    const { jobId } = req.params;
+    
+    console.log(`=== TEXT REPORT REQUEST ===`);
+    console.log(`Requested job ID: ${jobId}`);
+    
+    const job = testJobsStore.get(jobId);
+    
+    if (!job) {
+      return res.status(404).set('Content-Type', 'text/plain').send(
+        `Job not found: ${jobId}\n\n` +
+        `Available jobs: ${Array.from(testJobsStore.keys()).join(', ')}\n`
+      );
+    }
+    
+    // If report is not ready yet
+    if (!job.textReport) {
+      if (job.status === 'running' || job.status === 'queued') {
+        return res.status(202).set('Content-Type', 'text/plain').send(
+          `Test report not ready yet.\n\n` +
+          `Status: ${job.status}\n` +
+          `Job ID: ${jobId}\n` +
+          `Started: ${job.startedAt || 'N/A'}\n` +
+          `Please check back in a few moments.\n`
+        );
+      } else {
+        // Generate basic report from stdout/stderr if available
+        const basicReport = formatTextReport(
+          job.stdout || '',
+          job.stderr || '',
+          null,
+          job.status || 'unknown'
+        );
+        return res.status(200).set('Content-Type', 'text/plain').send(basicReport);
+      }
+    }
+    
+    // Return formatted text report
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    return res.status(200).send(job.textReport);
+    
+  } catch (error) {
+    console.error('Text report serving error:', error);
+    return res.status(500).set('Content-Type', 'text/plain').send(
+      `Error generating text report: ${error.message}\n`
+    );
   }
 });
 
