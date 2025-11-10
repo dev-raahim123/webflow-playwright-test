@@ -446,12 +446,25 @@ app.post('/api/webhook', (req, res) => {
     // Parse payload
     const payload = typeof req.body === 'object' ? req.body : JSON.parse(rawBody);
     
-    // Check if this is a site publish event
-    if (payload.name !== 'site.publish') {
-      console.log(`Ignoring webhook event: ${payload.name}`);
+    // Log full payload structure for debugging
+    console.log('=== PAYLOAD STRUCTURE ===');
+    console.log('Payload type:', typeof payload);
+    console.log('Payload keys:', Object.keys(payload || {}));
+    console.log('Full payload:', JSON.stringify(payload, null, 2));
+    
+    // Determine event type from payload
+    const eventType = payload.name || payload.triggerType || payload.type || payload.event;
+    const normalizedEventType = typeof eventType === 'string'
+      ? eventType.toLowerCase().replace(/[^a-z0-9]+/g, '_')
+      : undefined;
+    
+    console.log('Webhook event type detected:', eventType, 'normalized:', normalizedEventType);
+    
+    if (normalizedEventType !== 'site_publish') {
+      console.log(`Ignoring webhook event: ${eventType}`);
       return res.status(200).json({ 
         message: 'Event received but not a publish event',
-        event: payload.name 
+        event: eventType 
       });
     }
 
@@ -463,8 +476,9 @@ app.post('/api/webhook', (req, res) => {
       id: jobId,
       status: 'queued',
       createdAt: new Date().toISOString(),
-      webflowEvent: payload.name,
-      siteId: payload.site || payload.siteId,
+      webflowEvent: eventType,
+      siteId: payload.site || payload.siteId || payload?.payload?.siteId,
+      webflowPayload: payload.payload || payload.data || payload,
     });
 
     // Trigger test execution asynchronously
