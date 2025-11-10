@@ -453,9 +453,19 @@ async function runTestsAsync(jobId) {
           job.error = error.message;
           job.stderr = stderr;
           job.stdout = stdout;
-          job.textReport = formatTextReport(stdout, stderr, null, 'failed');
+          const failedTextReport = formatTextReport(stdout, stderr, null, 'failed');
+          job.textReport = failedTextReport;
           job.completedAt = new Date().toISOString();
           testJobsStore.set(jobId, job);
+          
+          // LOG THE FULL TEXT REPORT TO CONSOLE (for immediate access)
+          console.error(`\n${'='.repeat(80)}`);
+          console.error(`TEXT REPORT FOR JOB ${jobId} (FAILED)`);
+          console.error(`${'='.repeat(80)}\n`);
+          console.error(failedTextReport);
+          console.error(`\n${'='.repeat(80)}`);
+          console.error(`END OF TEXT REPORT FOR JOB ${jobId}`);
+          console.error(`${'='.repeat(80)}\n`);
           
           await saveTestReport(jobId);
           reject(error);
@@ -480,6 +490,15 @@ async function runTestsAsync(jobId) {
         
         // Format text report
         const textReport = formatTextReport(stdout, stderr, jsonReport, 'completed');
+        
+        // LOG THE FULL TEXT REPORT TO CONSOLE (for immediate access)
+        console.log(`\n${'='.repeat(80)}`);
+        console.log(`TEXT REPORT FOR JOB ${jobId}`);
+        console.log(`${'='.repeat(80)}\n`);
+        console.log(textReport);
+        console.log(`\n${'='.repeat(80)}`);
+        console.log(`END OF TEXT REPORT FOR JOB ${jobId}`);
+        console.log(`${'='.repeat(80)}\n`);
         
         job.status = 'completed';
         job.stdout = stdout;
