@@ -392,6 +392,15 @@ app.get('/', (req, res) => {
  * Webhook endpoint - Receives Webflow webhook
  */
 app.post('/api/webhook', (req, res) => {
+  // Log immediately when webhook is received
+  console.log('=== WEBHOOK RECEIVED ===');
+  console.log('Request method:', req.method);
+  console.log('Request path:', req.path);
+  console.log('Request URL:', req.url);
+  console.log('Content-Type:', req.headers['content-type']);
+  console.log('Has body:', !!req.body);
+  console.log('Body type:', typeof req.body);
+  
   try {
     const webhookSecret = process.env.WEBFLOW_WEBHOOK_SECRET;
     
@@ -503,7 +512,10 @@ app.post('/api/webhook', (req, res) => {
     });
 
   } catch (error) {
-    console.error('Webhook processing error:', error);
+    console.error('=== WEBHOOK PROCESSING ERROR ===');
+    console.error('Error message:', error.message);
+    console.error('Error stack:', error.stack);
+    console.error('Error details:', error);
     return res.status(500).json({ 
       error: 'Internal server error',
       message: error.message 
