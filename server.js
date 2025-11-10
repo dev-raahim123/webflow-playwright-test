@@ -270,14 +270,29 @@ async function saveTestReport(jobId) {
   try {
     const reportDir = path.join(process.cwd(), 'playwright-report');
     
+    console.log(`=== SAVING TEST REPORT ===`);
+    console.log(`Job ID: ${jobId}`);
+    console.log(`Report directory: ${reportDir}`);
+    
     try {
       await fs.access(reportDir);
+      console.log(`Report directory exists`);
     } catch {
       console.log(`Report directory not found: ${reportDir}`);
+      console.log(`Current working directory: ${process.cwd()}`);
+      console.log(`Listing current directory contents...`);
+      try {
+        const currentDir = await fs.readdir(process.cwd());
+        console.log(`Current directory files:`, currentDir);
+      } catch (e) {
+        console.error(`Error listing directory:`, e.message);
+      }
       return;
     }
 
     const reportFiles = await fs.readdir(reportDir);
+    console.log(`Found ${reportFiles.length} report files:`, reportFiles);
+    
     const reportData = {};
     
     for (const file of reportFiles) {
@@ -285,8 +300,13 @@ async function saveTestReport(jobId) {
       const stats = await fs.stat(filePath);
       
       if (stats.isFile()) {
-        const content = await fs.readFile(filePath, 'utf8');
-        reportData[file] = content;
+        try {
+          const content = await fs.readFile(filePath, 'utf8');
+          reportData[file] = content;
+          console.log(`Loaded report file: ${file} (${content.length} bytes)`);
+        } catch (e) {
+          console.error(`Error reading file ${file}:`, e.message);
+        }
       }
     }
 
@@ -295,11 +315,18 @@ async function saveTestReport(jobId) {
       job.reportData = reportData;
       job.reportFiles = reportFiles;
       testJobsStore.set(jobId, job);
+      console.log(`Report data saved to job ${jobId}`);
+      console.log(`Report files available:`, Object.keys(reportData));
+    } else {
+      console.error(`Job ${jobId} not found in store`);
     }
 
-    console.log(`Report saved for job ${jobId}`);
+    console.log(`=== REPORT SAVED SUCCESSFULLY ===`);
   } catch (error) {
-    console.error(`Error saving report for job ${jobId}:`, error);
+    console.error(`=== ERROR SAVING REPORT ===`);
+    console.error(`Job ID: ${jobId}`);
+    console.error(`Error:`, error.message);
+    console.error(`Stack:`, error.stack);
   }
 }
 
@@ -322,8 +349,11 @@ async function runTestsAsync(jobId) {
     // Run Playwright tests
     const testCommand = 'npx playwright test --project=chromium --reporter=html';
     
+    console.log(`Executing command: ${testCommand}`);
+    console.log(`Working directory: ${process.cwd()}`);
+    
     await new Promise((resolve, reject) => {
-      exec(testCommand, {
+      const childProcess = exec(testCommand, {
         cwd: process.cwd(),
         env: {
           ...process.env,
@@ -332,8 +362,12 @@ async function runTestsAsync(jobId) {
         maxBuffer: 10 * 1024 * 1024,
       }, async (error, stdout, stderr) => {
         if (error) {
-          console.error(`Test execution error: ${error.message}`);
+          console.error(`=== TEST EXECUTION ERROR ===`);
+          console.error(`Job ID: ${jobId}`);
+          console.error(`Error message: ${error.message}`);
+          console.error(`Error code: ${error.code}`);
           console.error(`STDERR: ${stderr}`);
+          console.error(`STDOUT: ${stdout}`);
           
           job.status = 'failed';
           job.error = error.message;
@@ -347,8 +381,13 @@ async function runTestsAsync(jobId) {
           return;
         }
 
-        console.log(`Tests completed for job ${jobId}`);
-        console.log(`STDOUT: ${stdout}`);
+        console.log(`=== TESTS COMPLETED SUCCESSFULLY ===`);
+        console.log(`Job ID: ${jobId}`);
+        console.log(`STDOUT length: ${stdout?.length || 0} characters`);
+        console.log(`STDOUT (first 500 chars): ${stdout?.substring(0, 500) || 'No output'}`);
+        if (stdout && stdout.length > 500) {
+          console.log(`STDOUT (last 500 chars): ${stdout.substring(stdout.length - 500)}`);
+        }
         
         job.status = 'completed';
         job.stdout = stdout;
@@ -356,8 +395,22 @@ async function runTestsAsync(jobId) {
         testJobsStore.set(jobId, job);
         
         await saveTestReport(jobId);
+        console.log(`Report saved for job ${jobId}`);
         resolve();
       });
+      
+      // Log real-time output as tests run
+      if (childProcess.stdout) {
+        childProcess.stdout.on('data', (data) => {
+          console.log(`[TEST OUTPUT] ${data.toString().trim()}`);
+        });
+      }
+      
+      if (childProcess.stderr) {
+        childProcess.stderr.on('data', (data) => {
+          console.error(`[TEST ERROR] ${data.toString().trim()}`);
+        });
+      }
     });
 
   } catch (error) {
