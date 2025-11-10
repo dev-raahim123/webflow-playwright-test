@@ -1,5 +1,6 @@
 // server.js
 // Express.js application - Main server file
+// Updated: 2025-11-07 - Fixed timestamp conversion and signature validation
 const express = require('express');
 const crypto = require('crypto');
 const { exec } = require('child_process');
