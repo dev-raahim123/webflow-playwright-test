@@ -46,6 +46,7 @@ function validateWebflowSignature(signature, body, secret, timestamp) {
   console.log('Body input type:', typeof body);
   console.log('Secret length:', secret?.length);
   console.log('Timestamp:', timestamp);
+  let normalizedTimestamp = null;
   
   if (!signature || !secret) {
     console.log('❌ Missing signature or secret');
@@ -60,6 +61,7 @@ function validateWebflowSignature(signature, body, secret, timestamp) {
       requestTime = Math.floor(requestTime / 1000);
       console.log('Converted timestamp from milliseconds to seconds:', requestTime);
     }
+    normalizedTimestamp = String(requestTime);
     const currentTime = Math.floor(Date.now() / 1000);
     const timeDiff = Math.abs(currentTime - requestTime);
     
@@ -73,36 +75,128 @@ function validateWebflowSignature(signature, body, secret, timestamp) {
   
   // Use Buffer if provided, otherwise convert to string then to buffer
   let bodyBuffer;
+  let bodyString = null;
   if (Buffer.isBuffer(body)) {
     bodyBuffer = body;
     console.log('Using body as Buffer, length:', bodyBuffer.length);
   } else {
-    const bodyString = typeof body === 'string' ? body : JSON.stringify(body);
+    bodyString = typeof body === 'string' ? body : JSON.stringify(body);
     bodyBuffer = Buffer.from(bodyString, 'utf8');
     console.log('Converted body to Buffer, length:', bodyBuffer.length);
     console.log('Body string (first 100):', bodyString.substring(0, 100));
   }
-  
-  // Create expected signature using Buffer directly
-  // Try multiple signature formats:
-  // 1. Body only (most common)
-  // 2. Timestamp + body (some providers do this)
-  const hmac1 = crypto.createHmac('sha256', secret);
-  hmac1.update(bodyBuffer);
-  const expectedSignature1 = hmac1.digest('hex');
-  
-  let expectedSignature2 = null;
-  if (timestamp) {
-    const hmac2 = crypto.createHmac('sha256', secret);
-    hmac2.update(timestamp);
-    hmac2.update('.');
-    hmac2.update(bodyBuffer);
-    expectedSignature2 = hmac2.digest('hex');
+  if (!bodyString) {
+    bodyString = bodyBuffer.toString('utf8');
   }
   
-  console.log('Expected signature (body only):', expectedSignature1);
-  console.log('Expected signature (timestamp.body):', expectedSignature2);
-  console.log('Expected signature length:', expectedSignature1.length);
+  // Prepare candidate secret keys
+  const secretCandidates = [];
+  const secretStrings = [];
+  const trimmedSecret = secret.trim();
+  secretStrings.push(secret);
+  if (!secretStrings.includes(trimmedSecret)) {
+    secretStrings.push(trimmedSecret);
+  }
+  const noNewlines = trimmedSecret.replace(/\r?\n|\r/g, '');
+  if (!secretStrings.includes(noNewlines)) {
+    secretStrings.push(noNewlines);
+  }
+  
+  for (const secretString of secretStrings) {
+    try {
+      secretCandidates.push({ label: `utf8(${JSON.stringify(secretString)})`, key: Buffer.from(secretString, 'utf8') });
+    } catch (err) {
+      console.log('Unable to create utf8 secret buffer for', secretString, err.message);
+    }
+    
+    if (/^[0-9a-f]+$/i.test(secretString) && secretString.length % 2 === 0) {
+      try {
+        const hexKey = Buffer.from(secretString, 'hex');
+        secretCandidates.push({ label: `hex(${JSON.stringify(secretString)})`, key: hexKey });
+      } catch (err) {
+        console.log('Secret is not valid hex:', secretString, err.message);
+      }
+    }
+    
+    try {
+      const base64Key = Buffer.from(secretString, 'base64');
+      const sanitizedSecret = secretString.replace(/=+$/, '');
+      if (base64Key.length && base64Key.toString('base64').replace(/=+$/, '') === sanitizedSecret) {
+        secretCandidates.push({ label: `base64(${JSON.stringify(secretString)})`, key: base64Key });
+      }
+    } catch (err) {
+      console.log('Secret is not valid base64:', secretString, err.message);
+    }
+  }
+  
+  console.log('Secret candidate keys:', secretCandidates.map(c => `${c.label}:${c.key.length}`));
+  
+  // Build expected signature variants
+  const expectedVariants = [];
+  
+  for (const { label, key } of secretCandidates) {
+    const variantBody = crypto.createHmac('sha256', key).update(bodyBuffer).digest('hex');
+    expectedVariants.push({ label: `${label}|body`, value: variantBody });
+    
+    if (timestamp) {
+      const tsOriginal = String(timestamp);
+      const tsNormalized = normalizedTimestamp ?? tsOriginal;
+      
+      expectedVariants.push({
+        label: `${label}|timestamp.body`,
+        value: crypto.createHmac('sha256', key).update(tsOriginal).update('.').update(bodyBuffer).digest('hex')
+      });
+      
+      expectedVariants.push({
+        label: `${label}|timestamp+body`,
+        value: crypto.createHmac('sha256', key).update(tsOriginal).update(bodyBuffer).digest('hex')
+      });
+      
+      expectedVariants.push({
+        label: `${label}|timestamp:body`,
+        value: crypto.createHmac('sha256', key).update(tsOriginal).update(':').update(bodyBuffer).digest('hex')
+      });
+      
+      expectedVariants.push({
+        label: `${label}|timestamp\\nbody`,
+        value: crypto.createHmac('sha256', key).update(tsOriginal).update('\n').update(bodyBuffer).digest('hex')
+      });
+      
+      expectedVariants.push({
+        label: `${label}|timestamp\\r\\nbody`,
+        value: crypto.createHmac('sha256', key).update(tsOriginal).update('\r\n').update(bodyBuffer).digest('hex')
+      });
+      
+      if (tsNormalized !== tsOriginal) {
+        expectedVariants.push({
+          label: `${label}|normalizedTimestamp.body`,
+          value: crypto.createHmac('sha256', key).update(tsNormalized).update('.').update(bodyBuffer).digest('hex')
+        });
+        
+        expectedVariants.push({
+          label: `${label}|normalizedTimestamp+body`,
+          value: crypto.createHmac('sha256', key).update(tsNormalized).update(bodyBuffer).digest('hex')
+        });
+        
+        expectedVariants.push({
+          label: `${label}|normalizedTimestamp:body`,
+          value: crypto.createHmac('sha256', key).update(tsNormalized).update(':').update(bodyBuffer).digest('hex')
+        });
+        
+        expectedVariants.push({
+          label: `${label}|normalizedTimestamp\\nbody`,
+          value: crypto.createHmac('sha256', key).update(tsNormalized).update('\n').update(bodyBuffer).digest('hex')
+        });
+        
+        expectedVariants.push({
+          label: `${label}|normalizedTimestamp\\r\\nbody`,
+          value: crypto.createHmac('sha256', key).update(tsNormalized).update('\r\n').update(bodyBuffer).digest('hex')
+        });
+      }
+    }
+  }
+  
+  console.log('Expected signature variants:', expectedVariants.map(v => `${v.label}:${v.value.substring(0, 16)}...`));
   
   // Extract the signature hash
   // Webflow format: "timestamp,signature" or just "signature"
@@ -122,50 +216,46 @@ function validateWebflowSignature(signature, body, secret, timestamp) {
   
   // Compare signatures
   try {
-    // Ensure both are the same length
-    if (expectedSignature1.length !== receivedHash.length) {
-      console.log('❌ Signature length mismatch:', {
-        expectedLength: expectedSignature1.length,
-        receivedLength: receivedHash.length,
-        expected: expectedSignature1,
-        received: receivedHash
-      });
+    if (!expectedVariants.length) {
+      console.log('No expected signature variants generated');
       return false;
     }
     
-    // Try both signature formats
-    let isValid = crypto.timingSafeEqual(
-      Buffer.from(expectedSignature1, 'hex'),
-      Buffer.from(receivedHash, 'hex')
-    );
+    const receivedBuffer = Buffer.from(receivedHash, 'hex');
+    let matchedVariant = null;
     
-    if (!isValid && expectedSignature2) {
-      // Try timestamp.body format
-      isValid = crypto.timingSafeEqual(
-        Buffer.from(expectedSignature2, 'hex'),
-        Buffer.from(receivedHash, 'hex')
-      );
-      if (isValid) {
-        console.log('✅ Signature match (using timestamp.body format)!');
+    for (const variant of expectedVariants) {
+      if (variant.value.length !== receivedHash.length) {
+        continue;
+      }
+      try {
+        const variantBuffer = Buffer.from(variant.value, 'hex');
+        if (crypto.timingSafeEqual(variantBuffer, receivedBuffer)) {
+          matchedVariant = variant;
+          break;
+        }
+      } catch (error) {
+        console.log('Error comparing variant', variant.label, error.message);
       }
     }
     
-    if (!isValid) {
-      console.log('❌ Signature mismatch:', {
-        expectedBodyOnly: expectedSignature1,
-        expectedTimestampBody: expectedSignature2,
-        received: receivedHash,
-        expectedFirst16: expectedSignature1.substring(0, 16),
-        receivedFirst16: receivedHash.substring(0, 16),
-        bodyLength: bodyBuffer.length,
-        secretLength: secret.length,
-        secretPreview: secret.substring(0, 10) + '...'
-      });
-    } else {
-      console.log('✅ Signature match!');
+    if (matchedVariant) {
+      console.log('✅ Signature match!', { variant: matchedVariant.label });
+      return true;
     }
     
-    return isValid;
+    console.log('❌ Signature mismatch:', {
+      received: receivedHash,
+      receivedFirst16: receivedHash.substring(0, 16),
+      variantsTried: expectedVariants.map(v => ({
+        label: v.label,
+        first16: v.value.substring(0, 16)
+      })),
+      bodyLength: bodyBuffer.length,
+      secretLength: secret.length,
+      secretPreview: secret.substring(0, 10) + '...'
+    });
+    return false;
   } catch (e) {
     console.error('❌ Signature validation error:', e.message);
     console.error('Error stack:', e.stack);
