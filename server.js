@@ -453,7 +453,9 @@ app.post('/api/webhook', (req, res) => {
     console.log('Full payload:', JSON.stringify(payload, null, 2));
     
     // Determine event type from payload
-    const eventType = payload.name || payload.triggerType || payload.type || payload.event;
+    // Webflow sends triggerType at root level, not inside payload object
+    const eventType = payload.triggerType || payload.name || payload.type || payload.event || 
+                      (payload.payload && payload.payload.triggerType);
     const normalizedEventType = typeof eventType === 'string'
       ? eventType.toLowerCase().replace(/[^a-z0-9]+/g, '_')
       : undefined;
